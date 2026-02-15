@@ -1,0 +1,17 @@
+# Qdrant / vector store (generated at runtime)
+store/
+
+# Secrets
+.env
+.env.local
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
