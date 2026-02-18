@@ -12,7 +12,7 @@ llm:
   parallel_workers: 3
 
 embedding:
-  tier: default   # default | small
+  tier: small   # default | small
   batch_size: 100
 
 chunking:

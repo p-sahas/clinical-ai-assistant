@@ -4,18 +4,16 @@ Internal Embedding RAG System for Healthcare Documents.
 This module implements embedding-based retrieval as INTERNAL MEMORY for agents.
 It is NOT a tool - it represents agent cognition/memory.
 
-Uses Qdrant for vector storage (store/) and OpenAI text-embedding-3-small for embeddings.
+Uses Qdrant for vector storage (store/) and sentence-transformers for local embeddings.
 Supports PDF, TXT, and DOCX.
 """
 
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
+from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-
-from utils.config import get_config, get_api_key
 
 try:
     import pypdf
@@ -26,9 +24,18 @@ try:
 except ImportError:
     docx = None
 
+from utils.config import get_config
+from utils.llm_services import create_embedding_provider
+
 SUPPORTED_EXTENSIONS = {".txt", ".pdf", ".docx"}
-# OpenAI text-embedding-3-small dimension
-EMBEDDING_SIZE = 1536
+# Known embedding dimensions
+EMBEDDING_DIMENSIONS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "openai/text-embedding-3-small": 1536,
+    "openai/text-embedding-3-large": 3072,
+    "all-MiniLM-L6-v2": 384,
+}
 
 # Project root (parent of rag_internal/) so store/ is always at repo root
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -61,22 +68,26 @@ class MedicalKnowledgeRetriever:
     ):
         config = get_config()
         self.docs_directory = Path(
-            docs_directory or config.get("data.docs_directory", "./data/medical_guides")
+            docs_directory or config.get(
+                "data.docs_directory", "./data/medical_guides")
         )
         cache_path_cfg = config.get("rag.cache_path", "./store")
         cache_path = Path(cache_path_cfg)
         # Resolve store path relative to project root so it's not created in scratch_demos/
-        self.store_path = cache_path if cache_path.is_absolute() else (_PROJECT_ROOT / cache_path).resolve()
+        self.store_path = cache_path if cache_path.is_absolute() else (
+            _PROJECT_ROOT / cache_path).resolve()
         self.collection_name = collection_name or config.get(
             "rag.collection_name", "medical_knowledge"
         )
         self.chunk_size = chunk_size or config.get("rag.chunk_size", 800)
         self.overlap = overlap or config.get("rag.overlap", 100)
-        self.embed_model = config.get("rag.embed_model", "text-embedding-3-small")
+        self.embed_model = config.get("rag.embed_model", "all-MiniLM-L6-v2")
         self.max_k = config.get("rag.max_k", 4)
         self.score_threshold = config.get("rag.score_threshold", 0.18)
 
-        self.openai_client = OpenAI(api_key=get_api_key("openai"))
+        self.embedder = create_embedding_provider()
+        self.embedding_size = EMBEDDING_DIMENSIONS.get(
+            self.embed_model, 1536)  # fallback
         self.store_path.mkdir(parents=True, exist_ok=True)
         qdrant_path = self.store_path / "qdrant"
         qdrant_path.mkdir(parents=True, exist_ok=True)
@@ -91,7 +102,7 @@ class MedicalKnowledgeRetriever:
             self._client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
-                    size=EMBEDDING_SIZE,
+                    size=self.embedding_size,
                     distance=Distance.COSINE,
                 ),
             )
@@ -106,7 +117,8 @@ class MedicalKnowledgeRetriever:
 
     def _read_pdf(self, file_path: Path) -> str:
         if pypdf is None:
-            print(f"PDF support not available (install pypdf). Skipping {file_path.name}")
+            print(
+                f"PDF support not available (install pypdf). Skipping {file_path.name}")
             return ""
         try:
             reader = pypdf.PdfReader(str(file_path))
@@ -122,7 +134,8 @@ class MedicalKnowledgeRetriever:
 
     def _read_docx(self, file_path: Path) -> str:
         if docx is None:
-            print(f"DOCX support not available (install python-docx). Skipping {file_path.name}")
+            print(
+                f"DOCX support not available (install python-docx). Skipping {file_path.name}")
             return ""
         try:
             doc = docx.Document(str(file_path))
@@ -164,7 +177,8 @@ class MedicalKnowledgeRetriever:
                         break
 
             chunks.append(
-                {"text": chunk_text.strip(), "source": source, "chunk_id": chunk_id}
+                {"text": chunk_text.strip(), "source": source,
+                 "chunk_id": chunk_id}
             )
 
             # If we reached the end of the text, stop the loop
@@ -182,10 +196,7 @@ class MedicalKnowledgeRetriever:
         return chunks
 
     def _get_embedding(self, text: str) -> List[float]:
-        response = self.openai_client.embeddings.create(
-            model=self.embed_model, input=text
-        )
-        return response.data[0].embedding
+        return self.embedder.embed([text])[0]
 
     def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         if not texts:
@@ -197,10 +208,7 @@ class MedicalKnowledgeRetriever:
             else:
                 s = (t.strip() or " ").replace("\x00", "")
                 safe.append(s[:30000] if len(s) > 30000 else s)
-        response = self.openai_client.embeddings.create(
-            model=self.embed_model, input=safe
-        )
-        return [[float(x) for x in item.embedding] for item in response.data]
+        return self.embedder.embed(safe)
 
     def _collect_document_paths(self) -> List[Path]:
         paths = []
@@ -223,7 +231,8 @@ class MedicalKnowledgeRetriever:
         if not doc_paths:
             return {"status": "no_documents", "document_count": 0}
 
-        print(f"Found {len(doc_paths)} document(s) to index (.txt, .pdf, .docx)...")
+        print(
+            f"Found {len(doc_paths)} document(s) to index (.txt, .pdf, .docx)...")
         all_chunks = []
         for path in doc_paths:
             print(f"Processing {path.name}...")
@@ -236,11 +245,12 @@ class MedicalKnowledgeRetriever:
             return {"status": "no_content", "document_count": 0}
 
         n_chunks = len(all_chunks)
-        print(f"Created {n_chunks} chunks. Embedding and saving to Qdrant (store/)...")
+        print(
+            f"Created {n_chunks} chunks. Embedding and saving to Qdrant (store/)...")
 
         batch_size = 20
         for i in range(0, n_chunks, batch_size):
-            batch = all_chunks[i : i + batch_size]
+            batch = all_chunks[i: i + batch_size]
             texts = [
                 str((c.get("text") or "").strip() or " ").replace("\x00", "")
                 for c in batch
@@ -346,5 +356,6 @@ _retriever_instance: Optional[MedicalKnowledgeRetriever] = None
 def get_retriever(reset_cache: bool = False) -> MedicalKnowledgeRetriever:
     global _retriever_instance
     if _retriever_instance is None or reset_cache:
-        _retriever_instance = MedicalKnowledgeRetriever(reset_cache=reset_cache)
+        _retriever_instance = MedicalKnowledgeRetriever(
+            reset_cache=reset_cache)
     return _retriever_instance

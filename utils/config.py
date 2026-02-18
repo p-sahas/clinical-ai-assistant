@@ -86,19 +86,21 @@ class ConfigManager:
         if models_file.exists():
             with open(models_file, "r") as f:
                 self._models = yaml.safe_load(f) or {}
-        provider = (self.config.get("provider") or {}).get("default", "openrouter")
+        provider = (self.config.get("provider") or {}
+                    ).get("default", "openrouter")
         tier = (self.config.get("provider") or {}).get("tier", "general")
-        embed_tier = (self.config.get("embedding") or {}).get("tier", "default")
+        embed_tier = (self.config.get("embedding")
+                      or {}).get("tier", "default")
         # Resolve chat model
         chat_model = (
             (self._models.get(provider) or {}).get("chat") or {}
         ).get(tier)
         if chat_model:
             self.config["model"] = chat_model
-        # Resolve embedding model from models.yaml only for openai (retriever uses OpenAI embeddings)
-        if provider == "openai":
+        # Resolve embedding model from models.yaml for openai and openrouter
+        if provider in ["openai", "openrouter"]:
             embed_model = (
-                (self._models.get("openai") or {}).get("embedding") or {}
+                (self._models.get(provider) or {}).get("embedding") or {}
             ).get(embed_tier)
             if embed_model and "rag" in self.config:
                 self.config["rag"]["embed_model"] = embed_model
@@ -130,7 +132,8 @@ class ConfigManager:
                 "cache_directory": paths.get("cache_dir", "./store"),
             }
         if "rag" in self.config and paths:
-            self.config["rag"]["cache_path"] = paths.get("cache_dir", "./store")
+            self.config["rag"]["cache_path"] = paths.get(
+                "cache_dir", "./store")
 
     def _load_single_file(self) -> None:
         """Load single YAML config file (e.g. config.yaml)."""
@@ -152,7 +155,8 @@ class ConfigManager:
     def _validate_env(self) -> None:
         """Validate required environment variables based on provider."""
         missing = []
-        provider = (self.config.get("provider") or {}).get("default", "openrouter")
+        provider = (self.config.get("provider") or {}
+                    ).get("default", "openrouter")
         if provider == "openrouter":
             if not os.getenv("OPENROUTER_API_KEY"):
                 missing.append("OPENROUTER_API_KEY")
@@ -166,21 +170,21 @@ class ConfigManager:
                 f"Missing required environment variables: {', '.join(missing)}\n"
                 "Set them in .env (e.g. OPENROUTER_API_KEY or OPENAI_API_KEY, TAVILY_API_KEY)."
             )
-            
+
     def get(self, key_path: str, default: Any = None) -> Any:
         """
         Get configuration value using dot notation.
-        
+
         Args:
             key_path: Dot-separated path (e.g., 'rag.chunk_size')
             default: Default value if key not found
-            
+
         Returns:
             Configuration value
         """
         keys = key_path.split('.')
         value = self.config
-        
+
         for key in keys:
             if isinstance(value, dict):
                 value = value.get(key)
@@ -188,13 +192,13 @@ class ConfigManager:
                     return default
             else:
                 return default
-                
+
         return value
-    
+
     def dump(self) -> Dict[str, Any]:
         """
         Return complete configuration as dictionary.
-        
+
         Returns:
             Full configuration dictionary
         """
@@ -203,11 +207,11 @@ class ConfigManager:
 
 class TokenCounter:
     """Utility for counting tokens in text."""
-    
+
     def __init__(self, model: str = "gpt-4o-mini"):
         """
         Initialize token counter.
-        
+
         Args:
             model: Model name for tokenizer selection
         """
@@ -222,26 +226,26 @@ class TokenCounter:
         except Exception:
             # Fallback to cl100k_base encoding
             self.encoding = tiktoken.get_encoding("cl100k_base")
-            
+
     def count_tokens(self, text: str) -> int:
         """
         Count tokens in text.
-        
+
         Args:
             text: Input text
-            
+
         Returns:
             Token count
         """
         return len(self.encoding.encode(text))
-    
+
     def count_messages_tokens(self, messages: list) -> int:
         """
         Count tokens in message list (for chat format).
-        
+
         Args:
             messages: List of message dictionaries
-            
+
         Returns:
             Total token count
         """
@@ -251,7 +255,7 @@ class TokenCounter:
             token_count += 4  # Format overhead per message
             token_count += self.count_tokens(message.get("role", ""))
             token_count += self.count_tokens(message.get("content", ""))
-            
+
         token_count += 2  # Overhead for reply priming
         return token_count
 
@@ -279,7 +283,8 @@ def get_api_key(service: str) -> str:
         raise ValueError(f"Unknown service: {service}")
     api_key = os.getenv(env_var)
     if not api_key:
-        raise ValueError(f"API key not found for {service}: set {env_var} in .env")
+        raise ValueError(
+            f"API key not found for {service}: set {env_var} in .env")
     return api_key
 
 
@@ -318,17 +323,16 @@ _config_instance: Optional[ConfigManager] = None
 def get_config(config_path: str = "config") -> ConfigManager:
     """
     Get global configuration instance (singleton pattern).
-    
+
     Args:
         config_path: Path to configuration file
-        
+
     Returns:
         ConfigManager instance
     """
     global _config_instance
-    
+
     if _config_instance is None:
         _config_instance = ConfigManager(config_path)
-        
-    return _config_instance
 
+    return _config_instance
