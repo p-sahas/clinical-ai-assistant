@@ -3,6 +3,10 @@ Web Search Tool using Tavily API.
 
 This is the ONLY external tool registered for agent use.
 It represents actions on the external world (unlike RAG which is internal memory).
+
+References:
+- Neural Maze: Agent Tools - The Bridge to the Outside World
+  https://theneuralmaze.substack.com/p/agent-tools-the-bridge-to-the-outside
 """
 
 import time
@@ -196,8 +200,7 @@ class WebSearchTool:
         for idx, result in enumerate(results[:self.max_results], 1):
             title = result["title"]
             content = result["content"][:300] + "..." if len(result["content"]) > 300 else result["content"]
-            # content = result["content"] # Show full content but it consume more tokens
-
+            
             result_text = f"{idx}. {title}\n{content}"
             
             if include_urls:

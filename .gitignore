@@ -1,4 +1,4 @@
-# Qdrant / vector store (generated at runtime)
+# Vector DB and caches (project root)
 store/
 
 # Secrets
@@ -7,6 +7,7 @@ store/
 
 # Python
 __pycache__/
+*.py[cod]
 .venv/
 *.pyc
 

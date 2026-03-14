@@ -1,5 +1,6 @@
 # Model Configuration
-# OpenRouter gives unified access;
+# OpenRouter gives unified access; set OPENROUTER_API_KEY in .env to use
+
 openrouter:
   chat:
     general: openai/gpt-4o-mini
