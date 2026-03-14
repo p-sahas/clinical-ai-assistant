@@ -73,10 +73,15 @@ class MedicalKnowledgeRetriever:
         self.chunk_size = chunk_size or config.get("rag.chunk_size", 800)
         self.overlap = overlap or config.get("rag.overlap", 100)
         self.embed_model = config.get("rag.embed_model", "text-embedding-3-small")
+        if self.embed_model == "text-embedding-3-small":
+            self.embed_model = "openai/text-embedding-3-small"
         self.max_k = config.get("rag.max_k", 4)
         self.score_threshold = config.get("rag.score_threshold", 0.18)
 
-        self.openai_client = OpenAI(api_key=get_api_key("openai"))
+        self.openai_client = OpenAI(
+            api_key=get_api_key("openrouter"),
+            base_url="https://openrouter.ai/api/v1"
+        )
         self.store_path.mkdir(parents=True, exist_ok=True)
         qdrant_path = self.store_path / "qdrant"
         qdrant_path.mkdir(parents=True, exist_ok=True)
