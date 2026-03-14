@@ -5,89 +5,70 @@ Provides OpenAI integration and maintains tool registry for agent interactions.
 Only web_search is registered as an external tool (RAG is internal).
 """
 
+import logging
 import time
-from typing import Dict, Any, List, Optional, Callable
-from openai import OpenAI
-from utils.config import get_config, get_api_key, TokenCounter
+from typing import Any, Callable, Dict, List, Optional
+
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+
+from utils.config import TokenCounter, get_api_key, get_config
+
+logger = logging.getLogger(__name__)
+
+# Errors that are safe to retry (transient server/network failures)
+_RETRYABLE_ERRORS = (InternalServerError, RateLimitError, APIConnectionError, APITimeoutError)
 
 
-class EmbeddingProvider:
-    """Base class for embedding providers."""
+def _call_with_retry(fn: Callable, max_retries: int = 5, base_delay: float = 2.0) -> Any:
+    """Call fn() with exponential-backoff retry on transient API errors.
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for a list of texts.
-
-        Args:
-            texts: List of text strings to embed
-
-        Returns:
-            List of embedding vectors
-        """
-        raise NotImplementedError
-
-
-class OpenRouterEmbeddingProvider(EmbeddingProvider):
-    """OpenRouter embedding provider."""
-
-    def __init__(self, model: str = "openai/text-embedding-3-large"):
-        self.api_key = get_api_key("openrouter")
-        self.client = OpenAI(api_key=self.api_key,
-                             base_url="https://openrouter.ai/api/v1")
-        self.model = model
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        safe_texts = [t.strip() if t else " " for t in texts]
-        response = self.client.embeddings.create(
-            model=self.model, input=safe_texts)
-        return [item.embedding for item in response.data]
-
-
-class OpenAIEmbeddingProvider(EmbeddingProvider):
-    """OpenAI embedding provider."""
-
-    def __init__(self, model: str = "text-embedding-3-small"):
-        self.api_key = get_api_key("openai")
-        self.client = OpenAI(api_key=self.api_key)
-        self.model = model
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        safe_texts = [t.strip() if t else " " for t in texts]
-        response = self.client.embeddings.create(
-            model=self.model, input=safe_texts)
-        return [item.embedding for item in response.data]
-
-
-class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
-    """Local SentenceTransformer embedding provider."""
-
-    def __init__(self, model: str = "all-MiniLM-L6-v2"):
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(model)
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        safe_texts = [t.strip() if t else " " for t in texts]
-        embeddings = self.model.encode(safe_texts)
-        return [emb.tolist() for emb in embeddings]
+    Retries on 5xx, 429, connection, and timeout errors.
+    Raises the last exception when all attempts are exhausted.
+    OpenRouter/upstream 500s are often transient; 5 retries with 2s base delay helps.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except _RETRYABLE_ERRORS as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "API call failed (attempt %d/%d): %s — retrying in %.1fs...",
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    delay,
+                )
+                print(f"[retry] attempt {attempt + 1}/{max_retries} failed ({exc}). Waiting {delay:.1f}s...")
+                time.sleep(delay)
+    raise last_exc
 
 
 class LLMProvider:
     """Base class for LLM providers."""
-
+    
     def generate(
-        self,
-        prompt: str,
+        self, 
+        prompt: str, 
         system_prompt: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
         Generate response from LLM.
-
+        
         Args:
             prompt: User prompt
             system_prompt: Optional system prompt
             **kwargs: Additional generation parameters
-
+            
         Returns:
             Dictionary with response, tokens, and timing info
         """
@@ -109,8 +90,7 @@ class OpenRouterProvider(LLMProvider):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.token_counter = TokenCounter(
-            "gpt-4o-mini")  # fallback for token counting
+        self.token_counter = TokenCounter("gpt-4o-mini")  # fallback for token counting
 
     def generate(
         self,
@@ -125,13 +105,13 @@ class OpenRouterProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         start_time = time.time()
-        response = self.client.chat.completions.create(
+        response = _call_with_retry(lambda: self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature if temperature is not None else self.temperature,
             max_tokens=max_tokens or self.max_tokens,
             **kwargs
-        )
+        ))
         latency_ms = int((time.time() - start_time) * 1000)
         msg = response.choices[0].message
         return {
@@ -155,14 +135,14 @@ class OpenRouterProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         start_time = time.time()
-        response = self.client.chat.completions.create(
+        response = _call_with_retry(lambda: self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=tools,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             **kwargs
-        )
+        ))
         latency_ms = int((time.time() - start_time) * 1000)
         message = response.choices[0].message
         return {
@@ -199,7 +179,7 @@ class OpenAIProvider(LLMProvider):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.token_counter = TokenCounter(self.model)
-
+        
     def generate(
         self,
         prompt: str,
@@ -210,14 +190,14 @@ class OpenAIProvider(LLMProvider):
     ) -> Dict[str, Any]:
         """
         Generate response using OpenAI API.
-
+        
         Args:
             prompt: User prompt
             system_prompt: Optional system prompt
             temperature: Override default temperature
             max_tokens: Override default max tokens
             **kwargs: Additional parameters
-
+            
         Returns:
             Dictionary with:
                 - response: Generated text
@@ -231,22 +211,22 @@ class OpenAIProvider(LLMProvider):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-
+        
         # Track timing
         start_time = time.time()
 
-        # Call API
-        response = self.client.chat.completions.create(
+        # Call API with retry on transient errors
+        response = _call_with_retry(lambda: self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature or self.temperature,
             max_tokens=max_tokens or self.max_tokens,
             **kwargs
-        )
-
+        ))
+        
         end_time = time.time()
         latency_ms = int((end_time - start_time) * 1000)
-
+        
         # Extract response and metrics
         result = {
             "response": response.choices[0].message.content,
@@ -256,9 +236,9 @@ class OpenAIProvider(LLMProvider):
             "latency_ms": latency_ms,
             "model": self.model
         }
-
+        
         return result
-
+    
     def generate_with_tools(
         self,
         prompt: str,
@@ -268,13 +248,13 @@ class OpenAIProvider(LLMProvider):
     ) -> Dict[str, Any]:
         """
         Generate response with tool calling support.
-
+        
         Args:
             prompt: User prompt
             tools: List of tool definitions in OpenAI format
             system_prompt: Optional system prompt
             **kwargs: Additional parameters
-
+            
         Returns:
             Dictionary with response and tool calls
         """
@@ -282,17 +262,17 @@ class OpenAIProvider(LLMProvider):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-
+        
         start_time = time.time()
 
-        response = self.client.chat.completions.create(
+        response = _call_with_retry(lambda: self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=tools,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             **kwargs
-        )
+        ))
 
         end_time = time.time()
         latency_ms = int((end_time - start_time) * 1000)
@@ -308,17 +288,17 @@ class OpenAIProvider(LLMProvider):
             "latency_ms": latency_ms,
             "model": self.model
         }
-
+        
         return result
 
 
 class DummyLocalProvider(LLMProvider):
     """Dummy local provider for testing (CPU-friendly)."""
-
+    
     def __init__(self):
         """Initialize dummy provider."""
         self.model = "dummy_local"
-
+        
     def generate(
         self,
         prompt: str,
@@ -327,7 +307,7 @@ class DummyLocalProvider(LLMProvider):
     ) -> Dict[str, Any]:
         """
         Generate dummy response.
-
+        
         Returns:
             Dummy response dictionary
         """
@@ -335,7 +315,7 @@ class DummyLocalProvider(LLMProvider):
             "This is a dummy response for testing. "
             "In production, this would be a real LLM response based on the prompt."
         )
-
+        
         return {
             "response": response_text,
             "prompt_tokens": 50,
@@ -349,16 +329,16 @@ class DummyLocalProvider(LLMProvider):
 class ToolRegistry:
     """
     Registry for external agent tools.
-
+    
     Note: RAG is NOT registered here - it's internal memory/cognition.
     Only web_search is registered as an external action tool.
     """
-
+    
     def __init__(self):
         """Initialize tool registry."""
         self._tools: Dict[str, Callable] = {}
         self._tool_definitions: List[Dict[str, Any]] = []
-
+        
     def register_tool(
         self,
         name: str,
@@ -368,7 +348,7 @@ class ToolRegistry:
     ) -> None:
         """
         Register a tool for agent use.
-
+        
         Args:
             name: Tool name
             func: Tool function
@@ -376,7 +356,7 @@ class ToolRegistry:
             parameters: JSON schema for tool parameters
         """
         self._tools[name] = func
-
+        
         # Create OpenAI function definition
         tool_def = {
             "type": "function",
@@ -386,56 +366,56 @@ class ToolRegistry:
                 "parameters": parameters
             }
         }
-
+        
         self._tool_definitions.append(tool_def)
-
+        
     def get_tool(self, name: str) -> Optional[Callable]:
         """
         Get tool function by name.
-
+        
         Args:
             name: Tool name
-
+            
         Returns:
             Tool function or None
         """
         return self._tools.get(name)
-
+    
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """
         Get tool definitions for LLM (OpenAI format).
-
+        
         Returns:
             List of tool definitions
         """
         return self._tool_definitions.copy()
-
+    
     def list_tools(self) -> List[str]:
         """
         List registered tool names.
-
+        
         Returns:
             List of tool names
         """
         return list(self._tools.keys())
-
+    
     def get_tools_header(self) -> str:
         """
         Get text description of available tools for prompts.
-
+        
         Returns:
             Formatted tool header string
         """
         if not self._tools:
             return "No external tools available."
-
+            
         header = "Available External Tools:\n\n"
         for tool_def in self._tool_definitions:
             func_def = tool_def["function"]
             header += f"- {func_def['name']}: {func_def['description']}\n"
-
+            
         header += "\nNote: Internal RAG retrieval is always available but not listed as a tool."
-
+        
         return header
 
 
@@ -451,18 +431,14 @@ def create_llm_provider(config: Optional[Dict[str, Any]] = None) -> LLMProvider:
         model = cfg.get("model", "gpt-4o-mini")
         temperature = cfg.get("temperature", 0.2)
         max_tokens = cfg.get("max_tokens", 512)
-        provider = cfg.get("provider.default") or (
-            cfg.get("provider") or {}).get("default") or "openrouter"
-        openrouter_base = (cfg.get("provider") or {}).get(
-            "openrouter_base_url", "https://openrouter.ai/api/v1")
+        provider = cfg.get("provider.default") or (cfg.get("provider") or {}).get("default") or "openrouter"
+        openrouter_base = (cfg.get("provider") or {}).get("openrouter_base_url", "https://openrouter.ai/api/v1")
     else:
         model = config.get("model", "gpt-4o-mini")
         temperature = config.get("temperature", 0.2)
         max_tokens = config.get("max_tokens", 512)
-        provider = ((config.get("provider") or {}).get("default") or "openrouter") if isinstance(
-            config.get("provider"), dict) else "openrouter"
-        openrouter_base = (config.get("provider") or {}).get(
-            "openrouter_base_url", "https://openrouter.ai/api/v1")
+        provider = ((config.get("provider") or {}).get("default") or "openrouter") if isinstance(config.get("provider"), dict) else "openrouter"
+        openrouter_base = (config.get("provider") or {}).get("openrouter_base_url", "https://openrouter.ai/api/v1")
 
     if "dummy" in (model or "").lower():
         return DummyLocalProvider()
@@ -474,45 +450,13 @@ def create_llm_provider(config: Optional[Dict[str, Any]] = None) -> LLMProvider:
             base_url=openrouter_base,
         )
     if provider != "openai" and provider != "openrouter":
-        raise ValueError(
-            f"Unknown provider: {provider}. Use openrouter or openai.")
+        raise ValueError(f"Unknown provider: {provider}. Use openrouter or openai.")
     # OpenAI when explicitly set to openai
     return OpenAIProvider(
         model=(model or "gpt-4o-mini").replace("openai_compatible:", ""),
         temperature=temperature,
         max_tokens=max_tokens,
     )
-
-
-def create_embedding_provider(config: Optional[Dict[str, Any]] = None) -> EmbeddingProvider:
-    """
-    Factory function to create embedding provider based on configuration.
-
-    Uses config/params.yaml + config/models.yaml when available.
-    Falls back to sentence-transformers if no API keys.
-    """
-    if config is None:
-        cfg = get_config()
-        embed_model = cfg.get("rag.embed_model", "all-MiniLM-L6-v2")
-        provider = cfg.get("provider.default") or (
-            cfg.get("provider") or {}).get("default") or "openrouter"
-    else:
-        embed_model = config.get("rag.embed_model", "all-MiniLM-L6-v2")
-        provider = ((config.get("provider") or {}).get("default") or "openrouter") if isinstance(
-            config.get("provider"), dict) else "openrouter"
-
-    # If embed_model is a full model name like openai/text-embedding-3-large, use API
-    if embed_model.startswith("openai/"):
-        if provider == "openrouter":
-            return OpenRouterEmbeddingProvider(model=embed_model)
-        elif provider == "openai":
-            return OpenAIEmbeddingProvider(model=embed_model.replace("openai/", ""))
-        else:
-            # Fallback to local
-            return SentenceTransformerEmbeddingProvider()
-    else:
-        # Assume local model
-        return SentenceTransformerEmbeddingProvider(model=embed_model)
 
 
 # Global tool registry instance
@@ -522,13 +466,14 @@ _tool_registry: Optional[ToolRegistry] = None
 def get_tool_registry() -> ToolRegistry:
     """
     Get global tool registry instance (singleton pattern).
-
+    
     Returns:
         ToolRegistry instance
     """
     global _tool_registry
-
+    
     if _tool_registry is None:
         _tool_registry = ToolRegistry()
-
+        
     return _tool_registry
+
