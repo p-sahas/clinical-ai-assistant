@@ -51,13 +51,29 @@ pip install -r requirements.txt
    Create a `.env` file in the root directory:
 
 ```env
+# ========================================
+# Required Secrets
+# ========================================
+
+# Required: Supabase credentials
+SUPABASE_URL=your_supabase_url_here
+SUPABASE_ANON_KEY=your_supabase_anon_key_here
+SUPABASE_SERVICE_KEY=your_supabase_service_key_here  # Optional, for admin operations
+SUPABASE_DB_URL=your_supabase_db_url_here
+
 # Required: Choose your LLM provider
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 # OR
 OPENAI_API_KEY=your_openai_api_key_here
 
-# Optional: For web search functionality
+# ========================================
+# Optional Provider Secrets
+# ========================================
+# For web search functionality
 TAVILY_API_KEY=your_tavily_api_key_here
+
+GOOGLE_API_KEY=your_google_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
 4. Configure your settings:
@@ -84,6 +100,22 @@ Available demos:
 - `02_tool_use_scratch.ipynb`: External tool integration
 - `03_planning_react_scratch.ipynb`: Goal-directed reasoning
 - `04_multi_agent_scratch.ipynb`: Multi-agent collaboration
+
+### Running LangGraph Demos
+
+Explore agent orchestration using LangGraph through Jupyter notebooks:
+
+```bash
+jupyter notebook langgraph_demos/
+```
+
+Available demos:
+
+- `00_langgraph_intro.ipynb`: Introduction to LangGraph fundamentals
+- `01_reflection_langgraph.ipynb`: Self-critique and iterative improvement with LangGraph
+- `02_tool_use_langgraph.ipynb`: External tool integration with LangGraph
+- `03_planning_react_langgraph.ipynb`: Goal-directed reasoning with LangGraph
+- `04_multi_agent_langgraph.ipynb`: Multi-agent collaboration with LangGraph
 
 ### Basic Usage Example
 
@@ -126,6 +158,12 @@ clinical-ai-assistant/
 ├── rag_internal/          # Internal RAG system
 │   ├── retriever.py       # Healthcare document retrieval
 │   └── __init__.py
+├── langgraph_demos/       # LangGraph orchestration notebooks
+│   ├── 00_langgraph_intro.ipynb
+│   ├── 01_reflection_langgraph.ipynb
+│   ├── 02_tool_use_langgraph.ipynb
+│   ├── 03_planning_react_langgraph.ipynb
+│   └── 04_multi_agent_langgraph.ipynb
 ├── scratch_demos/         # Educational notebooks
 │   ├── 01_reflection_scratch.ipynb
 │   ├── 02_tool_use_scratch.ipynb
